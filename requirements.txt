@@ -1,0 +1,4 @@
+pywayland
+psutil
+python-pam
+pillow

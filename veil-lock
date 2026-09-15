@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# запуск veil — локскрин на ext-session-lock-v1 (python + pywayland)
+#
+# сессию держит niri, так что если локер убить — экран останется
+# заблокированным (бордовый фон). аварийный выход без ребута:
+#   Ctrl+Alt+F3, логин в TTY, затем
+#   XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 hyprlock
+#
+# deps: sudo dnf install python3-psutil python3-pam python3-pillow
+#       pywayland стоит в ~/.local/share/veil/venv
+# старая TUI-версия: ~/.local/bin/veil_ui.py (нужен python3-textual)
+
+# форсируем US: таблица клавиш в локере US-based (как в lock.sh)
+niri msg action switch-layout 0 2>/dev/null
+
+# не даём логу расти бесконечно
+LOG="$HOME/.local/share/veil/veil.log"
+if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+    : > "$LOG"
+fi
+
+exec ~/.local/share/veil/venv/bin/python ~/.local/share/veil/veil_lock.py \
+    2>>"$LOG"

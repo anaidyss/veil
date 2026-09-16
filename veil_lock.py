@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-# veil — локскрин, клиент ext-session-lock-v1 для niri/wayland.
+# veil: lockscreen, ext-session-lock-v1 client for niri/wayland.
 #
-# порядок по спеке протокола:
-#   - вся подготовка (глобалы, шрифты, пре-рендер) — до lock()
-#   - lock() -> сразу get_lock_surface на каждый output
+# order per the protocol spec:
+#   - all prep (globals, fonts, pre-render) happens before lock()
+#   - lock() -> get_lock_surface on every output right away
 #   - configure -> ack -> attach -> commit
-#   - `locked` приходит только после предъявления кадров
-#   - unlock_and_destroy — только после locked (иначе invalid_unlock)
+#   - `locked` only comes after frames are presented
+#   - unlock_and_destroy only after locked (else invalid_unlock)
 #
-# если клиент умрёт залоченным, niri сессию не отпустит
-# (бордовый экран, выход через TTY/ребут), так что после lock()
-# код не имеет права падать.
+# if the client dies while locked, niri won't release the session
+# (crimson screen, exit via TTY/reboot), so after lock()
+# the code has no right to crash.
 #
-# запуск: ~/.local/bin/veil-lock
-# тест:   veil_lock.py --test 5 (авто-разблок через 5с)
-# рендер: veil_lock.py --render-out /tmp/frame.png (без wayland)
+# run:    ~/.local/bin/veil-lock
+# test:   veil_lock.py --test 5 (auto-unlock after 5s)
+# render: veil_lock.py --render-out /tmp/frame.png (no wayland)
 
 import argparse
 import ctypes
@@ -37,7 +37,7 @@ import psutil  # noqa: E402
 import pam as pam_module  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
-# Палитра Gruvbox
+# gruvbox palette
 BG = "#282828"
 FG = "#ebdbb2"
 ACCENT = "#d79921"
@@ -62,7 +62,7 @@ def get_font(bold: bool, size: int):
     return _FONTS[key]
 
 
-# ascii-арт "veil", точки между буквами — мини-боксы
+# ascii art "veil", dots between letters are mini-boxes
 ART = [
     "██╗  ██╗  ███████╗  ██╗  ██╗         ",
     "██║  ██║  ██╔════╝  ██║  ██║         ",
@@ -100,7 +100,7 @@ def _audit_message() -> str:
     return line
 
 
-# US-раскладка (evdev); veil-lock переключает niri на US
+# US layout (evdev); veil-lock switches niri to US
 _KEYMAP = {
     2: "1", 3: "2", 4: "3", 5: "4", 6: "5", 7: "6", 8: "7", 9: "8", 10: "9", 11: "0",
     12: "-", 13: "=", 16: "q", 17: "w", 18: "e", 19: "r", 20: "t", 21: "y", 22: "u",
@@ -108,7 +108,7 @@ _KEYMAP = {
     34: "g", 35: "h", 36: "j", 37: "k", 38: "l", 39: ";", 40: "'", 41: "`", 43: "\\",
     44: "z", 45: "x", 46: "c", 47: "v", 48: "b", 49: "n", 50: "m", 51: ",", 52: ".",
     53: "/", 57: " ",
-    # numpad (evdev): KPENTER=96 обрабатывается отдельно
+    # numpad (evdev): KPENTER=96 is handled separately
     55: "*", 71: "7", 72: "8", 73: "9", 74: "-", 75: "4", 76: "5", 77: "6",
     78: "+", 79: "1", 80: "2", 81: "3", 82: "0", 83: ".", 98: "/",
 }
@@ -121,7 +121,7 @@ KEY_ESC, KEY_BACKSPACE, KEY_ENTER, KEY_KPENTER = 1, 14, 28, 96
 MOD_SHIFT, MOD_CAPS, MOD_CTRL = 1, 2, 4
 
 
-# --- Состояние (не зависит от Wayland) ---
+# --- state (wayland-independent) ---
 class VeilState:
     def __init__(self):
         self.state = "locked"          # locked | verifying | failed | unlocked
@@ -150,7 +150,7 @@ class VeilState:
         self.audit.append((ts, msg or _audit_message()))
 
 
-# --- Рендер кадра (Pillow, символьная сетка) ---
+# --- frame render (Pillow, char grid) ---
 class Grid:
     def __init__(self, img, scale):
         self.img = img
@@ -158,8 +158,8 @@ class Grid:
         fsize = max(8, int(21 * scale))
         self.font = get_font(False, fsize)
         self.font_bold = get_font(True, fsize)
-        # float-advance: int() давал дрейф ~0.2px/колонку → правая
-        # рамка уезжала от уголков на целую клетку к 120-й колонке
+        # float advance: int() drifted ~0.2px/column so the right
+        # border slid a full cell off the corners by column 120
         self.cw = self.font.getlength("M") or 1.0
         asc, desc = self.font.getmetrics()
         self.ch = asc + desc
@@ -186,7 +186,7 @@ class Grid:
 
     def box(self, col, row, w, h, title=None, fg=FG):
         self.text(col, row, "┌" + "─" * (w - 2) + "┐", fg=fg)
-        mid = "│" + " " * (w - 2) + "│"  # одна строка = нет стыков
+        mid = "│" + " " * (w - 2) + "│"  # one string = no seams
         for r in range(row + 1, row + h - 1):
             self.text(col, r, mid, fg=fg)
         self.text(col, row + h - 1, "└" + "─" * (w - 2) + "┘", fg=fg)
@@ -194,7 +194,7 @@ class Grid:
             self.text(col + 2, row, f" {title} ", fg=ACCENT, bg=BG, bold=True)
 
     def bar(self, col, row, ncols, color, hfrac=0.68):
-        """Сплошная полоса вместо отдельных символов (без дыр в спейсинге)."""
+        """solid bar instead of separate chars (no spacing holes)."""
         x, y = self.cell(col, row)
         h = max(1, int(self.ch * hfrac))
         yo = (self.ch - h) // 2
@@ -208,13 +208,13 @@ def render_frame(state: VeilState, W, H, scale):
     g = Grid(img, scale)
     C, R = g.cols, g.rows
 
-    # Header (инвертированный)
+    # header (inverted)
     kernel = platform.release()
     header = f"[ V.E.I.L. CORE TERMINAL ] -- KERNEL: {kernel} -- STATUS: ISOLATED"
     g.fill_cells(0, 0, C, 1, ACCENT)
     g.text(1, 0, header[: C - 2], fg=BG, bold=True)
 
-    # Панели
+    # panels
     footer_h = 5
     body_top, body_bot = 2, R - footer_h - 2
     body_h = body_bot - body_top
@@ -224,7 +224,7 @@ def render_frame(state: VeilState, W, H, scale):
     g.box(ax, body_top, C - ax - 2, body_h, title="[ AUTH_GATEWAY ]")
     g.box(2, R - footer_h - 1, C - 4, footer_h, title="[ BACKGROUND_AUDIT ]")
 
-    # Телеметрия
+    # telemetry
     filled = max(0, min(10, round(state.cpu / 10)))
     tx, ty = 4, body_top + 2
     g.text(tx, ty, "CPU USAGE:", fg=FG)
@@ -240,7 +240,7 @@ def render_frame(state: VeilState, W, H, scale):
     # AUTH_GATEWAY
     pw, ph = C - ax - 2, body_h
     art_x = ax + max(0, (pw - len(ART[0])) // 2)
-    # блок контента: art(6) + 2 + status(1) + 2 + prompt(1) = 12 строк
+    # content block: art(6) + 2 + status(1) + 2 + prompt(1) = 12 lines
     art_y = body_top + max(1, (ph - 12) // 2)
     for i, line in enumerate(ART):
         g.text(art_x, art_y + i, line, fg=BRIGHT, bold=True)
@@ -256,7 +256,7 @@ def render_frame(state: VeilState, W, H, scale):
         color, msg = GREEN, "[ OK ] DECRYPTING SESSION..."
     g.text(ax + max(0, (pw - len(msg)) // 2), art_y + 8, msg, fg=color, bold=True)
 
-    # поле ввода: полоса вместо блоков (слитная, зелёная) + курсор
+    # input field: bar instead of blocks (solid, green) + cursor
     n = len(state.password)
     cursor = "▌" if state.blink and state.state == "locked" else " "
     prompt = "USER_KEY: "
@@ -265,10 +265,10 @@ def render_frame(state: VeilState, W, H, scale):
     py = art_y + 11
     g.text(px, py, prompt, fg=ACCENT)
     if n:
-        g.bar(px + len(prompt), py, n, FG)  # бледная полоса ввода
+        g.bar(px + len(prompt), py, n, FG)  # pale input bar
     g.text(px + len(prompt) + n, py, cursor, fg=BRIGHT)
 
-    # Аудит-лог
+    # audit log
     for i, (ts, msg) in enumerate(state.audit):
         row = R - footer_h + i
         g.text(4, row, f"[{ts}]", fg=DIM)
@@ -277,7 +277,7 @@ def render_frame(state: VeilState, W, H, scale):
     return img
 
 
-# --- Wayland-клиент ---
+# --- wayland client ---
 def _memfd(size: int) -> int:
     libc = ctypes.CDLL("libc.so.6", use_errno=True)
     fd = libc.memfd_create(b"veil-shm", 1)  # MFD_CLOEXEC
@@ -288,7 +288,7 @@ def _memfd(size: int) -> int:
 
 
 class LockBusy(Exception):
-    """Композитор ответил `finished` — сессия уже занята другим локером."""
+    """compositor sent `finished`: session already taken by another locker."""
 
 
 class OutputSurface:
@@ -305,11 +305,11 @@ class OutputSurface:
         self.frame_size = 0
         self.buf_idx = 0
         self.busy = [False, False]
-        # ВАЖНО: сильные ссылки на wl_buffer — pywayland держит прокси
-        # в WeakSet, без ссылки GC убьёт прокси и release-событие
-        # некому доставить → busy залипнет → экран замерзнет
+        # IMPORTANT: strong refs to wl_buffer: pywayland holds proxies
+        # in a WeakSet, without a ref GC kills the proxy and the release
+        # event has nowhere to go, busy sticks, screen freezes
         self.buffer_refs = [None, None]
-        self._pools = []  # старые пулы живут, пока живы их буферы
+        self._pools = []  # old pools live while their buffers do
 
     def attach(self, compositor, lock):
         self.surface = compositor.create_surface()
@@ -319,18 +319,18 @@ class OutputSurface:
     def on_configure(self, lock_surface, serial, w, h):
         try:
             lock_surface.ack_configure(serial)
-            # configure даёт ЛОГИЧЕСКИЙ размер; smithay сверяет
-            # buffer_size / buffer_scale == configure, поэтому буфер
-            # рендерим в физических пикселях (w*scale, h*scale)
+            # configure gives LOGICAL size; smithay checks
+            # buffer_size / buffer_scale == configure, so we render
+            # the buffer in physical pixels (w*scale, h*scale)
             w, h = int(w), int(h)
             need_resize = (self.w, self.h) != (w, h)
             self.w, self.h = w, h
             if w <= 0 or h <= 0:
                 return
             if self.pool is None or need_resize:
-                # пересоздаём пул; старый держим в _pools, пока его
-                # буферы не освободит композитор (иначе use-after-free
-                # → protocol error → бордовый экран)
+                # recreate the pool; keep the old one in _pools until the
+                # compositor frees its buffers (else use-after-free
+                # -> protocol error -> crimson screen)
                 self.frame_size = w * self.scale * h * self.scale * 4
                 fd = _memfd(self.frame_size * 2)
                 mm = mmap.mmap(fd, self.frame_size * 2)
@@ -343,7 +343,7 @@ class OutputSurface:
                 self.buf_idx = 0
             self.configured = True
             self.veil.redraw_now = True
-        except Exception as e:  # после lock() падать нельзя
+        except Exception as e:  # after lock() we can't crash
             print(f"[V.E.I.L.] configure error: {e}", file=sys.stderr)
 
     def draw(self, state):
@@ -351,7 +351,7 @@ class OutputSurface:
             return
         pw, ph = self.w * self.scale, self.h * self.scale
         if pw * ph * 4 != self.frame_size:
-            return  # рассинхрон размера — ждём новый configure
+            return  # size out of sync, wait for a new configure
         i = self.buf_idx
         if self.busy[i]:
             i = 1 - i
@@ -404,7 +404,7 @@ class VeilLock:
     def log(self, msg):
         print(f"[V.E.I.L.] {msg}", file=sys.stderr, flush=True)
 
-    # фаза 1: всё ДО lock()
+    # phase 1: everything BEFORE lock()
     def connect(self):
         from pywayland.client import Display
         from protocols.wayland import WlCompositor, WlOutput, WlSeat, WlShm
@@ -415,10 +415,10 @@ class VeilLock:
         registry = self.display.get_registry()
         registry.dispatcher["global"] = self._on_global
         registry.dispatcher["global_remove"] = lambda *a: None
-        self.display.roundtrip()   # global-события → bind'ы
-        self.display.roundtrip()   # события на связанных прокси (caps, mode...)
+        self.display.roundtrip()   # global events -> binds
+        self.display.roundtrip()   # events on bound proxies (caps, mode...)
 
-        # добить ожидание клавиатуры/режимов выходов (до 2с)
+        # finish waiting for the keyboard/output modes (up to 2s)
         t0 = time.monotonic()
         while time.monotonic() - t0 < 2.0:
             if self.keyboard and all(o["mode"] for o in self.outputs.values()):
@@ -429,11 +429,11 @@ class VeilLock:
                    (("compositor", self.compositor), ("shm", self.shm),
                     ("ext-session-lock", self.lock_manager)) if not v]
         if missing:
-            raise RuntimeError(f"нет wayland-глобалов: {missing}")
+            raise RuntimeError(f"missing wayland globals: {missing}")
         if not self.outputs:
-            raise RuntimeError("нет ни одного wl_output")
+            raise RuntimeError("not a single wl_output")
         if not self.keyboard:
-            raise RuntimeError("seat без клавиатуры?")
+            raise RuntimeError("seat without a keyboard?")
 
     def _on_global(self, registry, name, interface, version):
         from protocols.wayland import WlCompositor, WlOutput, WlSeat, WlShm
@@ -494,7 +494,7 @@ class VeilLock:
             pass
 
     def prewarm(self):
-        """Прогреть шрифты и рендер ДО lock() — после будет нельзя."""
+        """warm up fonts and render BEFORE lock(): after that we can't."""
         w, h = 1920, 1080
         scale = 1
         for info in self.outputs.values():
@@ -506,13 +506,13 @@ class VeilLock:
         get_font(True, max(8, int(21 * scale)))
         t0 = time.monotonic()
         render_frame(self.state, w, h, scale)
-        self.log(f"prewarm ok ({w}x{h}@{scale} за {time.monotonic()-t0:.2f}s)")
+        self.log(f"prewarm ok ({w}x{h}@{scale} in {time.monotonic()-t0:.2f}s)")
 
-    # фаза 2: lock() + НЕМЕДЛЕННО поверхности
-    # ВНИМАНИЕ: после отправки lock() процесс не имеет права умирать
-    # до получения `locked` + unlock_and_destroy. niri через 1с
-    # дожидается кадров (или их отсутствия) и лочится намертво;
-    # смерть клиента = бордовый экран до ребута.
+    # phase 2: lock() + surfaces IMMEDIATELY
+    # WARNING: after sending lock() the process has no right to die
+    # before getting `locked` + unlock_and_destroy. niri waits 1s
+    # for frames (or their absence) and locks hard;
+    # client death = crimson screen until reboot.
     def acquire_and_render(self):
         self.lock = self.lock_manager.lock()
         self.lock.dispatcher["locked"] = self._on_locked
@@ -524,7 +524,7 @@ class VeilLock:
             self.surfaces.append(s)
         self.display.flush()
 
-        # ждём configure (события ЧИТАЕМ: dispatch(block=True)!)
+        # wait for configure (we READ events: dispatch(block=True)!)
         fd = self.display.get_fd()
         t0 = time.monotonic()
         while time.monotonic() - t0 < 10.0:
@@ -540,7 +540,7 @@ class VeilLock:
                 self.log(f"dispatch error: {e}")
                 break
         if not all(s.configured for s in self.surfaces):
-            self.log("configure не получен, но продолжаю (niri залочится сам)")
+            self.log("configure not received, but continuing (niri will lock itself)")
 
         self._draw_all()
 
@@ -551,7 +551,7 @@ class VeilLock:
     def _on_finished(self, _lock):
         self.finished = True
 
-    # ввод
+    # input
     def _on_modifiers(self, _kb, _serial, depressed, latched, locked, _group):
         self.mods = int(depressed) | int(latched)
         self.locked_mods = int(locked)
@@ -612,7 +612,7 @@ class VeilLock:
             self.redraw_now = True
             self._draw_all()
             t0 = time.monotonic()
-            while time.monotonic() - t0 < 0.9:  # показать "[ OK ]"
+            while time.monotonic() - t0 < 0.9:  # show "[ OK ]"
                 try:
                     r, _, _ = select.select([self.display.get_fd()], [], [], 0.1)
                     if r:
@@ -625,7 +625,7 @@ class VeilLock:
             self.state.failed_until = time.monotonic() + 2.0
             self.redraw_now = True
 
-    # главный цикл
+    # main loop
     def run(self):
         self._install_signals()
         fd = self.display.get_fd()
@@ -647,7 +647,7 @@ class VeilLock:
                     pass
                 self._check_pam()
             if fd in r:
-                self.display.dispatch(block=True)  # ЧИТАЕТ сокет, в отличие от block=False
+                self.display.dispatch(block=True)  # READS the socket, unlike block=False
 
             now = time.monotonic()
             if now - t_blink >= 0.5:
@@ -670,10 +670,10 @@ class VeilLock:
                 self.redraw_now = True
             if t_deadline and now >= t_deadline:
                 if self.locked_received:
-                    self.log("test deadline — разблокирую")
+                    self.log("test deadline, unlocking")
                     self.unlock_confirmed()
                 elif now - t_deadline < 0.1 or int(now) % 5 == 0:
-                    self.log("test deadline: жду locked от композитора...")
+                    self.log("test deadline: waiting for locked from the compositor...")
                 t_deadline = now + 1.0 if not self.locked_received else t_deadline
             if self.redraw_now:
                 self.redraw_now = False
@@ -681,13 +681,13 @@ class VeilLock:
 
     def _install_signals(self):
         if self.test_seconds:
-            # в тест-режиме SIGTERM/SIGINT: если locked получен — честно
-            # разблокировать; если нет — НИКАКОГО destroy, просто ждать
+            # in test mode on SIGTERM/SIGINT: if locked arrived, honestly
+            # unlock; if not, NO destroy at all, just wait
             def _handler(_sig, _frm):
                 if self.locked_received:
                     self.unlock_confirmed()
                 else:
-                    self.log("TERM/INT до locked — destroy невозможен, жду")
+                    self.log("TERM/INT before locked, can't destroy, waiting")
             for sig in (signal.SIGTERM, signal.SIGINT):
                 try:
                     signal.signal(sig, _handler)
@@ -714,9 +714,9 @@ class VeilLock:
         except Exception as e:
             self.log(f"flush error: {e}")
 
-    # выходы (все заканчиваются os._exit, обходя cffi-teardown)
+    # exits (all end with os._exit, bypassing cffi teardown)
     def unlock_confirmed(self):
-        """Только когда locked получен: unlock_and_destroy валиден."""
+        """only when locked was received: unlock_and_destroy is valid."""
         self.running = False
         try:
             self.lock.unlock_and_destroy()
@@ -739,40 +739,40 @@ def _pam_auth(password: str) -> bool:
 def main():
     ap = argparse.ArgumentParser(description="V.E.I.L. ext-session-lock")
     ap.add_argument("--test", type=float, default=0,
-                    help="авто-разблокировка через N секунд")
+                    help="auto-unlock after N seconds")
     ap.add_argument("--render-out", metavar="PNG",
-                    help="отрисовать кадр в PNG и выйти (без Wayland)")
+                    help="render a frame to PNG and exit (no wayland)")
     args = ap.parse_args()
 
     if args.render_out:
         st = VeilState()
         img = render_frame(st, 3120, 2080, 2)
         img.save(args.render_out)
-        print(f"кадр {img.size} -> {args.render_out}")
+        print(f"frame {img.size} -> {args.render_out}")
         return 0
 
     veil = VeilLock(test_seconds=args.test)
-    veil._install_signals()  # сразу: в тест-режиме TERM/INT = чистый выход
+    veil._install_signals()  # right away: in test mode TERM/INT = clean exit
 
-    # фаза 1: безопасно падать
+    # phase 1: safe to crash
     try:
         veil.connect()
         veil.prewarm()
     except Exception as e:
-        print(f"[V.E.I.L.] pre-lock ошибка: {e}", file=sys.stderr)
+        print(f"[V.E.I.L.] pre-lock error: {e}", file=sys.stderr)
         os._exit(1)
 
-    # фаза 2: после lock() падать нельзя
+    # phase 2: after lock() crashing is forbidden
     try:
         veil.acquire_and_render()
     except LockBusy:
-        print("[V.E.I.L.] сессия уже заблокирована (finished)", file=sys.stderr)
+        print("[V.E.I.L.] session already locked (finished)", file=sys.stderr)
         os._exit(1)
     except Exception as e:
-        # поверхности могли не создаться — не выходим! niri через 1с
-        # залочится сам (blank), а клавиатура продолжит работать:
-        # пароль → PAM → unlock_and_destroy остаётся возможным
-        veil.log(f"acquire error: {e} — продолжаю в любом случае")
+        # surfaces may have failed to create, don't exit! in 1s niri
+        # locks itself (blank) and the keyboard keeps working:
+        # password -> PAM -> unlock_and_destroy stays possible
+        veil.log(f"acquire error: {e}, continuing anyway")
 
     fails = 0
     while True:
@@ -783,8 +783,8 @@ def main():
             raise
         except Exception as e:
             fails += 1
-            delay = min(float(fails), 10.0)  # backoff: не спамим в лог
-            veil.log(f"fatal в run(): {e} — перезапуск цикла через {delay:.0f}с")
+            delay = min(float(fails), 10.0)  # backoff: don't spam the log
+            veil.log(f"fatal in run(): {e}, restarting loop in {delay:.0f}s")
             time.sleep(delay)
     os._exit(0)
 

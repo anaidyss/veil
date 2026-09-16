@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ставит veil в ~/.local/share/veil, лаунчер в ~/.local/bin
+# installs veil into ~/.local/share/veil, launcher into ~/.local/bin
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -16,8 +16,8 @@ if [ ! -d "$DIR/venv" ]; then
     "$DIR/venv/bin/pip" install -q -r requirements.txt
 fi
 
-# биндинги протоколов из xml
+# protocol bindings from xml
 cd "$DIR"
 venv/bin/python -m pywayland.scanner -i xml/wayland.xml xml/ext-session-lock-v1.xml -o protocols
 
-echo "готово, запуск: veil-lock"
+echo "done, run: veil-lock"

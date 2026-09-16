@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# veil — терминальный локскрин (textual), старая версия для TTY
+# veil: terminal lockscreen (textual), old TTY version
 # deps: sudo dnf install python3-textual python3-psutil python3-pam
-# цвета gruvbox: фон #282828, рамки #ebdbb2, акценты #d79921 #fab327
+# gruvbox colors: bg #282828, borders #ebdbb2, accents #d79921 #fab327
 
 import asyncio
 import getpass
@@ -19,11 +19,11 @@ try:
     from textual.containers import Horizontal, Vertical
     from textual.widgets import Static
 except ImportError as exc:
-    print(f"[V.E.I.L.] Не хватает зависимости: {exc}")
-    print("[V.E.I.L.] Установи: sudo dnf install python3-textual python3-psutil python3-pam")
+    print(f"[V.E.I.L.] missing dependency: {exc}")
+    print("[V.E.I.L.] install: sudo dnf install python3-textual python3-psutil python3-pam")
     raise SystemExit(1)
 
-# ASCII-арт "V.E.I.L." блочным шрифтом
+# ASCII art "V.E.I.L." in block font
 _GLYPHS = {
     "V": ["██     ██", " ██   ██ ", " ██   ██ ", "  ██ ██  ", "   ███   "],
     "E": ["██████", "██    ", "█████ ", "██    ", "██████"],
@@ -36,7 +36,7 @@ _ART = "\n".join(
     for row in range(5)
 )
 
-# Фоновый «аудит» для нижней панели
+# background "audit" for the bottom panel
 _AUDIT_LINES = [
     "dumping cache... {}MB flushed",
     "verifying checksums... 0x{:08X} ok",
@@ -65,11 +65,11 @@ def _audit_message() -> str:
 
 
 class VeilApp(App):
-    """V.E.I.L. — пока PAM не скажет True, выхода нет."""
+    """V.E.I.L.: no way out until PAM says True."""
 
     TITLE = "V.E.I.L."
     ENABLE_COMMAND_PALETTE = False
-    BINDINGS = []  # никаких хоткеев textual (ctrl+q и т.п.)
+    BINDINGS = []  # no textual hotkeys (ctrl+q etc)
 
     CSS = """
     Screen {
@@ -136,7 +136,7 @@ class VeilApp(App):
         self._blink = True
         self._audit = deque(maxlen=3)
 
-    # Разметка
+    # layout
     def compose(self):
         kernel = platform.release()
         yield Static(
@@ -156,14 +156,14 @@ class VeilApp(App):
         self.query_one("#auth").border_title = "\\[ AUTH_GATEWAY ]"
         self.query_one("#footer").border_title = "\\[ BACKGROUND_AUDIT ]"
 
-        # Перехват сигналов ещё раз: драйвер textual мог поставить свои
+        # intercept signals again: the textual driver may have set its own
         for sig in (signal.SIGINT, signal.SIGTSTP, signal.SIGTERM,
                     signal.SIGHUP, signal.SIGQUIT):
             try:
                 signal.signal(sig, signal.SIG_IGN)
             except (ValueError, OSError):
                 pass
-        psutil.cpu_percent(interval=None)  # прогреть счётчик CPU
+        psutil.cpu_percent(interval=None)  # warm up the CPU counter
         self._update_telemetry()
         self._update_status()
         self._update_prompt()
@@ -172,14 +172,14 @@ class VeilApp(App):
         self.set_interval(0.5, self._tick_blink)
         self.set_interval(1.1, self._push_audit)
 
-    # не даём textual усыпить/закрыть приложение
+    # don't let textual suspend/close the app
     def action_quit(self) -> None:
         pass
 
     def action_suspend(self) -> None:
         pass
 
-    # Телеметрия (левая колонка)
+    # telemetry (left column)
     def _update_telemetry(self) -> None:
         cpu = psutil.cpu_percent(interval=None)
         filled = max(0, min(10, round(cpu / 10)))
@@ -194,7 +194,7 @@ class VeilApp(App):
             f"ACTIVE_DAEMONS: {daemons}"
         )
 
-    # Статус (мигающий LOCKED / ошибки / успех)
+    # status (blinking LOCKED / errors / success)
     def _tick_blink(self) -> None:
         self._blink = not self._blink
         self._update_status()
@@ -221,13 +221,13 @@ class VeilApp(App):
             f"[#d79921]USER_KEY:[/] [#ebdbb2]{blocks}[/][#fab327]{cursor}[/]"
         )
 
-    # Фоновый «аудит» (нижняя панель)
+    # background "audit" (bottom panel)
     def _push_audit(self) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         self._audit.append(f"[#665c54]\\[{ts}][/] {_audit_message()}")
         self.query_one("#footer", Static).update("\n".join(self._audit))
 
-    # Ввод: всё перехватывается здесь
+    # input: everything is intercepted here
     def on_key(self, event) -> None:
         event.stop()
         event.prevent_default()
@@ -258,12 +258,12 @@ class VeilApp(App):
         self._audit.append(f"[#665c54]\\[{ts}][/] intercepting {name}... dropped")
         self.query_one("#footer", Static).update("\n".join(self._audit))
 
-    # PAM-аутентификация
+    # PAM auth
     @staticmethod
     def _pam_auth(password: str) -> bool:
         try:
             user = getpass.getuser()
-            if hasattr(pam_module, "pam"):  # python-pam 1.x и 2.x
+            if hasattr(pam_module, "pam"):  # python-pam 1.x and 2.x
                 return bool(pam_module.pam().authenticate(user, password))
             return bool(pam_module.authenticate(user, password))
         except Exception:
@@ -289,7 +289,7 @@ class VeilApp(App):
 
 
 def main() -> None:
-    # Игнорируем сигналы до старта: Ctrl+C / Ctrl+Z / kill не помогут
+    # ignore signals before start: Ctrl+C / Ctrl+Z / kill won't help
     for sig in (signal.SIGINT, signal.SIGTSTP, signal.SIGTERM,
                 signal.SIGHUP, signal.SIGQUIT):
         try:

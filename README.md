@@ -1,39 +1,40 @@
 # veil
 
-локскрин для niri/wayland на ext-session-lock-v1: python + pywayland,
-рендер кадра через pillow, пароль проверяется через PAM. сессию держит
-композитор, поэтому Ctrl+C и kill не помогут — если процесс умрёт
-залоченным, разблокировать придётся из TTY (см. ниже).
+a lockscreen for niri/wayland on ext-session-lock-v1: python + pywayland,
+frames rendered with pillow, password checked via PAM. the session is held
+by the compositor, so Ctrl+C and kill won't help. if the process dies while
+locked, you'll have to unlock from a TTY (see below).
 
-на экране: ascii-арт, часы, cpu/ram, фейковый «аудит» внизу — просто
-потому что выглядит круто. палитра gruvbox.
+on screen: ascii art, clock, cpu/ram and a fake "audit" at the bottom. just
+because it looks cool. gruvbox palette.
 
-## установка
+## install
 
     ./install.sh
 
-скрипт ставит всё в ~/.local/share/veil (venv, биндинги протоколов из xml/),
-лаунчер — в ~/.local/bin/veil-lock. бинд в niri:
+the script puts everything into ~/.local/share/veil (venv, protocol bindings
+from xml/), launcher goes to ~/.local/bin/veil-lock. bind in niri:
 
     Mod+Shift+V { spawn "/home/anaidyss/.local/bin/veil-lock"; }
 
-нужны: python3, шрифт JetBrainsMono Nerd Font в ~/.local/share/fonts
-(Regular и Bold ttf).
+needs: python3, JetBrainsMono Nerd Font in ~/.local/share/fonts
+(Regular and Bold ttf).
 
-## как работает
+## how it works
 
-- вся подготовка (глобалы, шрифты, пре-рендер) — строго до lock()
-- после lock() сразу get_lock_surface на каждый output, кадры через shm/memfd
-- `locked` приходит только после предъявления кадров
-- unlock_and_destroy — только после locked, иначе invalid_unlock и бордовый экран
-- аварийный выход без ребута: Ctrl+Alt+F3, логин в TTY, затем
+- all setup (globals, fonts, pre-render) happens strictly before lock()
+- right after lock(): get_lock_surface for each output, frames via shm/memfd
+- `locked` only arrives after the frames are presented
+- unlock_and_destroy only after locked, otherwise invalid_unlock and a
+  maroon screen
+- emergency exit without a reboot: Ctrl+Alt+F3, log into a TTY, then
   `XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 hyprlock`
 
-биндинги протоколов не лежат в репо, они генерируются install.sh:
+protocol bindings are not in the repo, install.sh generates them:
 
     venv/bin/python -m pywayland.scanner -i xml/wayland.xml xml/ext-session-lock-v1.xml -o protocols
 
 ## veil_ui.py
 
-старая версия — TUI на textual для обычного терминала (не настоящий локскрин,
-для tty). deps: python3-textual python3-psutil python3-pam, запуск напрямую.
+the old version: a textual TUI for a regular terminal (not a real lockscreen,
+tty only). deps: python3-textual python3-psutil python3-pam, run directly.

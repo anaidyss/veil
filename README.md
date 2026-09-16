@@ -1,5 +1,7 @@
 # veil
 
+![veil demo](assets/demo.gif)
+
 a lockscreen for niri/wayland on ext-session-lock-v1: python + pywayland,
 frames rendered with pillow, password checked via PAM. the session is held
 by the compositor, so Ctrl+C and kill won't help. if the process dies while
